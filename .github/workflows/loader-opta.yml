@@ -1,0 +1,96 @@
+# Build the Zephyr LOADER for Arduino Opta on GitHub's Linux runners and hand
+# back everything a desk PC needs to install it as a second core.
+#
+# Why this exists (ATOCO, 2026-09-17): the stock loader's airoc Wi-Fi driver
+# cannot re-associate after a deauth/disconnect (stuck is_sta_connected, no
+# DHCP restart, dead data path after leave->join). Fixing that means building
+# the loader ourselves, and Arduino's tooling is Linux-only. This job IS the
+# Linux box.
+#
+# It is Arduino's own package_core.yml recipe, step for step -- plain
+# ubuntu-latest, the same apt line, the same west cache, `yes |
+# extra/bootstrap.sh` (venv + west + SDK toolchains + HAL filter + WLAN
+# firmware blobs) -- then extra/build.sh for arduino_opta//m7 and
+# extra/package_core.sh, which produce exactly the files the distributed core
+# ships. Nothing here is invented; where Arduino's job fans out over every
+# board, this one builds one.
+#
+# Phase 1 acceptance (docs/loader-rebuild.md): an UNMODIFIED tree must build
+# here and the result must boot the gateway sketch on the dev board. Only then
+# does the driver change.
+name: Build Opta loader
+
+on:
+  push:
+    branches: [ atoco/loader ]
+  workflow_dispatch:
+
+jobs:
+  loader:
+    name: Opta loader (arduino_opta//m7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Install OS dependencies
+        working-directory: /opt
+        timeout-minutes: 5
+        run: |
+          sudo apt-get remove --purge man-db -y
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git cmake wget python3-pip python3-venv ninja-build jq zip curl rsync zstd
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Cache west modules and blobs
+        uses: actions/cache@v5
+        with:
+          key: west-cache-${{ hashFiles('west.yml', 'boards.txt') }}
+          restore-keys: |
+            west-cache-
+          path: ${{ runner.temp }}/west-cache
+
+      - name: Initialize Zephyr environment (Arduino's bootstrap, as a core user would)
+        timeout-minutes: 25
+        env:
+          WEST_CACHE: ${{ runner.temp }}/west-cache
+        run: yes | ./extra/bootstrap.sh -o=--filter=tree:0
+
+      - name: Record exactly what is being built
+        run: |
+          echo "core:   $(git rev-parse --short HEAD)  $(git describe --tags --always --dirty)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "zephyr: $(git -C ../zephyr rev-parse --short HEAD)  $(git -C ../zephyr describe --tags --always)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "airoc_wifi.c sha256: $(sha256sum ../zephyr/drivers/wifi/infineon/airoc_wifi.c | cut -c1-16)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "flag cleared on deauth in this driver: $(grep -c 'is_sta_connected = false' ../zephyr/drivers/wifi/infineon/airoc_wifi.c) site(s)" | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Build the loader + llext-edk for arduino_opta//m7
+        timeout-minutes: 40
+        run: ./extra/build.sh arduino_opta//m7
+
+      - name: Package the installable core
+        run: |
+          VER="1.0.0-atoco.$(git rev-parse --short HEAD)"
+          echo "CORE_VERSION=$VER" >> $GITHUB_ENV
+          source venv/bin/activate
+          mkdir -p distrib
+          ./extra/package_core.sh zephyr "$VER" distrib/zephyr-atoco-$VER.tar.bz2
+          ls -l distrib/ firmwares/ | tee -a $GITHUB_STEP_SUMMARY
+          # the symbols port/*.h depends on must still be exported (docs/loader-rebuild.md, Phase 1 acceptance)
+          NM=$(ls ~/zephyr-sdk-*/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm | head -n1)
+          for s in net_if_get_wifi_sta net_if_down net_if_up net_if_dormant_on net_if_dormant_off net_dhcpv4_restart whd_wifi_leave whd_wifi_join whd_wifi_is_ready_to_transceive airoc_wifi_power_on zsock_poll zsock_send zsock_close; do
+            printf '  %-34s exported=%s\n' "$s" "$($NM firmwares/zephyr-arduino_opta_stm32h747xx_m7.elf | grep -cE " (T|W) $s\$")"
+          done | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Upload loader, EDK and packaged core
+        uses: actions/upload-artifact@v7
+        with:
+          name: opta-loader-${{ env.CORE_VERSION }}
+          retention-days: 30
+          path: |
+            firmwares/zephyr-arduino_opta_stm32h747xx_m7.*
+            variants/arduino_opta_stm32h747xx_m7/**
+            distrib/*.tar.bz2
