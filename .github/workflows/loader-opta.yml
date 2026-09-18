@@ -97,13 +97,28 @@ jobs:
           echo "--- in the tar:" | tee -a $GITHUB_STEP_SUMMARY
           tar -tjf distrib/*.tar.bz2 | grep -E 'firmwares/|/platform.txt$|/boards.txt$' | tee -a $GITHUB_STEP_SUMMARY
           tar -xjOf distrib/*.tar.bz2 ArduinoCore-zephyr/platform.txt | grep -m1 '^version=' | tee -a $GITHUB_STEP_SUMMARY
-          # the symbols port/*.h depends on must still be exported (docs/loader-rebuild.md, Phase 1 acceptance)
+          # The symbols port/*.h calls must still be in the loader (docs/loader-rebuild.md,
+          # Phase 1 acceptance). In static link mode the sketch is prelinked against the
+          # loader's global symbols (T), so that is what is checked; the llext export table
+          # (__llext_sym_*, dynamic mode) is counted too and must not shrink below the
+          # stock 1.0.0 loader's 571 entries. Zephyr SDK 1.0.x keeps the toolchains under
+          # gnu/ -- the first run looked in the 0.16-style place, found nothing and read 0 everywhere.
           SDK=$(west sdk list | grep path | tail -n 1 | cut -d ':' -f 2 | tr -d ' ')
-          NM="$SDK/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm"
-          echo "--- exported symbols ($NM):" | tee -a $GITHUB_STEP_SUMMARY
-          for s in net_if_get_wifi_sta net_if_down net_if_up net_if_dormant_on net_if_dormant_off net_dhcpv4_restart whd_wifi_leave whd_wifi_join whd_wifi_is_ready_to_transceive airoc_wifi_power_on zsock_poll zsock_send zsock_close; do
-            printf '  %-34s exported=%s\n' "$s" "$("$NM" firmwares/zephyr-arduino_opta_stm32h747xx_m7.elf | grep -cE " [TW] $s\$")"
-          done | tee -a $GITHUB_STEP_SUMMARY
+          NM="$SDK/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm"
+          [ -x "$NM" ] || NM="$(find "$SDK" -name arm-zephyr-eabi-nm -type f | head -n 1)"
+          [ -x "$NM" ] || { echo "arm-zephyr-eabi-nm not found under $SDK"; exit 1; }
+          "$NM" firmwares/zephyr-arduino_opta_stm32h747xx_m7.elf > nm.txt
+          EXPORTS=$(grep -c ' r __llext_sym_' nm.txt || true)
+          echo "--- llext export table: $EXPORTS entries (stock 1.0.0: 571)" | tee -a $GITHUB_STEP_SUMMARY
+          [ "$EXPORTS" -ge 571 ] || { echo "export table shrank"; exit 1; }
+          echo "--- global symbols port/*.h links against ($NM):" | tee -a $GITHUB_STEP_SUMMARY
+          : > missing.txt
+          for s in net_if_get_wifi_sta net_if_down net_if_up net_if_dormant_on net_if_dormant_off net_dhcpv4_restart net_dhcpv4_start net_dhcpv4_stop whd_wifi_leave whd_wifi_join whd_wifi_is_ready_to_transceive airoc_wifi_power_on; do
+            n=$(grep -cE " [TW] $s\$" nm.txt || true)
+            printf '  %-34s present=%s\n' "$s" "$n" | tee -a $GITHUB_STEP_SUMMARY
+            [ "$n" = 1 ] || echo "$s" >> missing.txt
+          done
+          [ ! -s missing.txt ] || { echo "MISSING: $(tr '\n' ' ' < missing.txt)" | tee -a $GITHUB_STEP_SUMMARY; exit 1; }
 
       - name: Upload loader, EDK and packaged core
         uses: actions/upload-artifact@v7
