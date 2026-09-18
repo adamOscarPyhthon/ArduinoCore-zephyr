@@ -25,6 +25,11 @@ on:
     branches: [ atoco/loader ]
   workflow_dispatch:
 
+# one build per branch; a newer push supersedes the one still running
+concurrency:
+  group: loader-opta-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   loader:
     name: Opta loader (arduino_opta//m7)
@@ -77,12 +82,27 @@ jobs:
           echo "CORE_VERSION=$VER" >> $GITHUB_ENV
           source venv/bin/activate
           mkdir -p distrib
-          ./extra/package_core.sh zephyr "$VER" distrib/zephyr-atoco-$VER.tar.bz2
+          # zephyr_main is the artifact group Opta belongs to (the stock core is
+          # arduino:zephyr_main). package_core.sh exits 3 when any variant of the
+          # group lacks a firmware -- we build one board of nine on purpose, and
+          # the tar it has already written is complete for Opta. Any other exit
+          # code is a real failure.
+          set +e
+          ./extra/package_core.sh zephyr_main "$VER" "distrib/zephyr_main-atoco-$VER.tar.bz2"
+          rc=$?
+          set -e
+          if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then echo "package_core.sh failed with $rc"; exit "$rc"; fi
+          echo "package_core.sh rc=$rc (3 = other variants' firmwares absent, expected)" | tee -a $GITHUB_STEP_SUMMARY
           ls -l distrib/ firmwares/ | tee -a $GITHUB_STEP_SUMMARY
+          echo "--- in the tar:" | tee -a $GITHUB_STEP_SUMMARY
+          tar -tjf distrib/*.tar.bz2 | grep -E 'firmwares/|/platform.txt$|/boards.txt$' | tee -a $GITHUB_STEP_SUMMARY
+          tar -xjOf distrib/*.tar.bz2 ArduinoCore-zephyr/platform.txt | grep -m1 '^version=' | tee -a $GITHUB_STEP_SUMMARY
           # the symbols port/*.h depends on must still be exported (docs/loader-rebuild.md, Phase 1 acceptance)
-          NM=$(ls ~/zephyr-sdk-*/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm | head -n1)
+          SDK=$(west sdk list | grep path | tail -n 1 | cut -d ':' -f 2 | tr -d ' ')
+          NM="$SDK/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm"
+          echo "--- exported symbols ($NM):" | tee -a $GITHUB_STEP_SUMMARY
           for s in net_if_get_wifi_sta net_if_down net_if_up net_if_dormant_on net_if_dormant_off net_dhcpv4_restart whd_wifi_leave whd_wifi_join whd_wifi_is_ready_to_transceive airoc_wifi_power_on zsock_poll zsock_send zsock_close; do
-            printf '  %-34s exported=%s\n' "$s" "$($NM firmwares/zephyr-arduino_opta_stm32h747xx_m7.elf | grep -cE " (T|W) $s\$")"
+            printf '  %-34s exported=%s\n' "$s" "$("$NM" firmwares/zephyr-arduino_opta_stm32h747xx_m7.elf | grep -cE " [TW] $s\$")"
           done | tee -a $GITHUB_STEP_SUMMARY
 
       - name: Upload loader, EDK and packaged core
