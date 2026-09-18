@@ -228,6 +228,12 @@ FORCE_EXPORT_SYM(net_mgmt_NET_REQUEST_WIFI_DISCONNECT);
 FORCE_EXPORT_SYM(net_mgmt_NET_REQUEST_WIFI_VERSION);
 #endif
 
+#if defined(CONFIG_WIFI_AIROC)
+/* ATOCO: association trace ring of the patched airoc driver (west.yml: remote atoco).
+ * Exporting it also keeps the accessor out of --gc-sections' reach. */
+FORCE_EXPORT_SYM(airoc_trace_get);
+#endif
+
 #if defined(CONFIG_BT)
 FORCE_EXPORT_SYM(bt_enable_raw);
 FORCE_EXPORT_SYM(bt_send);

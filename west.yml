@@ -17,11 +17,16 @@ manifest:
       url-base: https://github.com/facchinm
     - name: pillo79
       url-base: https://github.com/pillo79
+    # ATOCO: our fork of arduino/zephyr carrying the airoc STA re-association
+    # fix and trace ring (branch atoco/airoc-rejoin, based on the exact
+    # commit zephyr-arduino-v4.4.1+ points at, 1743741760ee).
+    - name: atoco
+      url-base: https://github.com/adamOscarPyhthon
 
   projects:
     - name: zephyr
-      remote: arduino
-      revision: zephyr-arduino-v4.4.1+
+      remote: atoco
+      revision: atoco/airoc-rejoin
       import:
         name-allowlist:
           - cmsis
