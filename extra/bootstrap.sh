@@ -90,5 +90,16 @@ done
 
 NEEDED_HALS="arduino-api $NEEDED_HALS"
 log_msg "group" "Fetching blobs for: $NEEDED_HALS"
-west blobs $WEST_BLOBS_CACHE fetch $NEEDED_HALS
+# ATOCO lab/lowpower only: artifacts.silabs.net answered 521 on 2026-11-25 and
+# took the whole bootstrap down. The Opta loader links nothing from hal_silabs,
+# so that one HAL may fail; every other HAL must still fetch.
+for hal in $NEEDED_HALS; do
+  if ! west blobs $WEST_BLOBS_CACHE fetch $hal; then
+    if [ "$hal" = "hal_silabs" ]; then
+      echo "WARNING: hal_silabs blobs not fetched (not used by arduino_opta)"
+    else
+      echo "blob fetch failed for $hal"; exit 1
+    fi
+  fi
+done
 log_msg "endgroup"
