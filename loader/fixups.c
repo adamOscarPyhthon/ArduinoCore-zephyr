@@ -623,3 +623,68 @@ int system_utilities(void) {
 SYS_INIT(system_utilities, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 #endif
+
+#if defined(CONFIG_BOARD_ARDUINO_OPTA) && defined(CONFIG_FLASH_STM32_QSPI)
+/*
+ * ATOCO low-power lab (branch lab/lowpower, not for merging).
+ *
+ * A reset of the MCU does not reset the external QSPI flash. If firmware had
+ * put the flash into deep power-down (0xB9) and a reset arrives before it is
+ * released, this loader does not come up on USB (seen 2026-11-24 on an
+ * unmodified atoco-loader.10: gone until a power cycle).
+ *
+ * So, before the QSPI flash driver initialises (POST_KERNEL, priority 50),
+ * configure the QUADSPI pins and send one Release-from-Deep-Power-Down (0xAB)
+ * in single-line mode at the slowest clock. On a flash that is already awake
+ * the command does nothing. The controller is handed back disabled; the
+ * driver configures it from scratch.
+ *
+ * The same sequence was verified in a plain Zephyr app on this board
+ * (opta-lowpower-lab/lesson4_scenario, v2).
+ */
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/pinctrl.h>
+#include <soc.h>
+
+PINCTRL_DT_DEFINE(DT_NODELABEL(quadspi));
+
+/* read by the lab sketch (static link): 0 sent, <0 error, 1 hook never ran */
+int atoco_flash_wake_rc = 1;
+
+static int atoco_qspi_idle(void) {
+	for (int i = 0; i < 20000; i++) {
+		if ((QUADSPI->SR & QUADSPI_SR_BUSY) == 0U) {
+			return 0;
+		}
+		k_busy_wait(5);
+	}
+	return -ETIMEDOUT;
+}
+
+static int atoco_flash_wake_at_boot(void) {
+	int rc;
+
+	RCC->AHB3ENR |= RCC_AHB3ENR_QSPIEN;
+	(void)RCC->AHB3ENR;
+	rc = pinctrl_apply_state(PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(quadspi)),
+							 PINCTRL_STATE_DEFAULT);
+	if (rc == 0) {
+		QUADSPI->CR = 0;
+		QUADSPI->DCR = 23U << QUADSPI_DCR_FSIZE_Pos;
+		QUADSPI->CR = (255U << QUADSPI_CR_PRESCALER_Pos) | QUADSPI_CR_EN;
+		rc = atoco_qspi_idle();
+		if (rc == 0) {
+			QUADSPI->FCR = QUADSPI_FCR_CTCF | QUADSPI_FCR_CTEF;
+			QUADSPI->CCR = QUADSPI_CCR_IMODE_0 | 0xABU;
+			rc = atoco_qspi_idle();
+			QUADSPI->FCR = QUADSPI_FCR_CTCF;
+			k_busy_wait(100);
+		}
+		QUADSPI->CR = 0;
+	}
+	atoco_flash_wake_rc = rc;
+	return 0;
+}
+
+SYS_INIT(atoco_flash_wake_at_boot, POST_KERNEL, 45);
+#endif
