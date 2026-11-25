@@ -646,7 +646,8 @@ SYS_INIT(system_utilities, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #include <zephyr/drivers/pinctrl.h>
 #include <soc.h>
 
-PINCTRL_DT_DEFINE(DT_NODELABEL(quadspi));
+/* the loader builds with CONFIG_PINCTRL_NON_STATIC: use the driver's own config */
+PINCTRL_DT_DEV_CONFIG_DECLARE(DT_NODELABEL(quadspi));
 
 /* read by the lab sketch (static link): 0 sent, <0 error, 1 hook never ran */
 int atoco_flash_wake_rc = 1;
